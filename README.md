@@ -41,3 +41,7 @@ successful request.
 - Text/image input capability
 - Reasoning support
 - Input/output/cache pricing
+
+## More Extensions
+
+- [tab-follow-up](https://github.com/lollipopkit/pi-tab-follow-up): Use <kbd>Tab</kbd> instead of <kbd>Alt</kbd>+<kbd>Enter</kbd> to trigger follow-up input.
