@@ -5,7 +5,7 @@
 ## 安装
 
 ```bash
-pi install https://github.com/lollipopkit/pi-models-metadata
+pi install npm:pi-models-metadata
 # 自定义 provider base URL 和 API Key
 export PIMM_BASE_URL=https://openrouter.ai/api/v1
 export PIMM_API_KEY=your_api_key_here
