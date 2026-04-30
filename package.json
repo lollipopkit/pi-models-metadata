@@ -1,8 +1,14 @@
 {
 	"name": "pi-models-metadata",
-	"private": true,
-	"version": "0.70.6",
+	"version": "0.1.0",
+	"description": "Pi extension that registers provider models with metadata enrichment.",
 	"type": "module",
+	"files": [
+		"index.ts",
+		"README.md",
+		"README.zh.md",
+		".env.example"
+	],
 	"scripts": {
 		"clean": "echo 'nothing to clean'",
 		"build": "echo 'nothing to build'",
