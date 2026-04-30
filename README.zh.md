@@ -16,7 +16,9 @@ pi
 ## 可选配置
 
 ```bash
-# 默认使用 openai-response 格式的API响应
+# 默认使用 OpenAI Responses API
+export PIMM_API_TYPE=openai-responses
+# OpenAI Chat Completions 兼容 provider 使用这个
 export PIMM_API_TYPE=openai-completions
 export PIMM_PROVIDER_NAME=custom-provider-name
 export PIMM_METADATA_DATA_URL=https://yourdomain.com/path/to/models-data.json

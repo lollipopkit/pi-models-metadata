@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import type { Api } from "@mariozechner/pi-ai";
 import type {
 	ExtensionAPI,
 	ProviderModelConfig,
@@ -14,7 +15,7 @@ const PROVIDER_NAME_ENV = "PIMM_PROVIDER_NAME";
 const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
 const BASE_URL_ENV = "PIMM_BASE_URL";
 const API_KEY_ENV = "PIMM_API_KEY";
-const DEFAULT_API_TYPE = "openai-response";
+const DEFAULT_API_TYPE: Api = "openai-responses";
 const API_TYPE_ENV = "PIMM_API_TYPE";
 const PRICE_SCALE = 1_000_000;
 const LOG_PREFIX = "[pi-models-metadata]";
@@ -165,6 +166,13 @@ function readBooleanEnv(name: string): boolean {
 
 	console.warn(`${LOG_PREFIX} Invalid ${name}=${rawValue}; using false.`);
 	return false;
+}
+
+function readApiType(): Api {
+	const rawValue = process.env[API_TYPE_ENV];
+	if (!rawValue) return DEFAULT_API_TYPE;
+
+	return rawValue as Api;
 }
 
 function readCacheDir(): string {
@@ -522,7 +530,7 @@ export default async function (pi: ExtensionAPI) {
 	const modelsUrl = process.env[METADATA_URL_ENV] || DEFAULT_METADATA_URL;
 	const baseUrl = process.env[BASE_URL_ENV] || DEFAULT_BASE_URL;
 	const apiKey = process.env[API_KEY_ENV];
-	const apiType = process.env[API_TYPE_ENV] || DEFAULT_API_TYPE;
+	const apiType = readApiType();
 	const providerName = process.env[PROVIDER_NAME_ENV] || DEFAULT_PROVIDER_NAME;
 	const cacheTtlMs = readCacheTtlMs();
 	const cacheDir = readCacheDir();

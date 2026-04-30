@@ -16,7 +16,9 @@ pi
 ## Optional Configuration
 
 ```bash
-# Defaults to openai-response API response format
+# Defaults to OpenAI Responses API
+export PIMM_API_TYPE=openai-responses
+# Use this for OpenAI Chat Completions-compatible providers
 export PIMM_API_TYPE=openai-completions
 export PIMM_PROVIDER_NAME=custom-provider-name
 export PIMM_METADATA_DATA_URL=https://yourdomain.com/path/to/models-data.json
