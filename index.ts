@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type {
 	ExtensionAPI,
 	ProviderModelConfig,
@@ -13,9 +17,28 @@ const API_KEY_ENV = "PIMM_API_KEY";
 const DEFAULT_API_TYPE = "openai-response";
 const API_TYPE_ENV = "PIMM_API_TYPE";
 const PRICE_SCALE = 1_000_000;
+const LOG_PREFIX = "[pi-models-metadata]";
+const CACHE_DIR_ENV = "PIMM_CACHE_DIR";
+const CACHE_TTL_SECONDS_ENV = "PIMM_CACHE_TTL_SECONDS";
+const DEFAULT_CACHE_TTL_SECONDS = 60 * 60;
+const DOT_ENV_FILE = ".env";
 
 interface OrmcModelsResponse {
 	data: OrmcModel[];
+}
+
+interface ProviderModelsResponse {
+	data: ProviderListedModel[];
+}
+
+interface ProviderListedModel {
+	id: string;
+	name?: string;
+}
+
+interface CacheEntry {
+	cachedAt: number;
+	data: unknown;
 }
 
 interface OrmcModel {
@@ -57,6 +80,137 @@ function asStringArray(value: unknown): string[] | undefined {
 		value.every((entry) => typeof entry === "string")
 		? value
 		: undefined;
+}
+
+function readCacheEntry(value: unknown): CacheEntry | undefined {
+	if (!isRecord(value)) return undefined;
+
+	const cachedAt = asNumber(value.cachedAt);
+	if (cachedAt === undefined || !("data" in value)) return undefined;
+
+	return {
+		cachedAt,
+		data: value.data,
+	};
+}
+
+function parseDotEnvValue(value: string): string {
+	const trimmed = value.trim();
+	if (
+		(trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+		(trimmed.startsWith("'") && trimmed.endsWith("'"))
+	) {
+		return trimmed.slice(1, -1);
+	}
+	return trimmed;
+}
+
+async function loadDotEnv(): Promise<void> {
+	let content: string;
+	try {
+		content = await readFile(DOT_ENV_FILE, "utf8");
+	} catch {
+		return;
+	}
+
+	for (const rawLine of content.split(/\r?\n/)) {
+		const line = rawLine.trim().replace(/^export\s+/, "");
+		if (!line || line.startsWith("#")) continue;
+
+		const equalsIndex = line.indexOf("=");
+		if (equalsIndex <= 0) continue;
+
+		const key = line.slice(0, equalsIndex).trim();
+		if (!key || process.env[key] !== undefined) continue;
+
+		process.env[key] = parseDotEnvValue(line.slice(equalsIndex + 1));
+	}
+}
+
+function readCacheTtlMs(): number {
+	const rawValue = process.env[CACHE_TTL_SECONDS_ENV];
+	if (!rawValue) return DEFAULT_CACHE_TTL_SECONDS * 1000;
+
+	const ttlSeconds = Number.parseFloat(rawValue);
+	if (!Number.isFinite(ttlSeconds) || ttlSeconds < 0) {
+		console.warn(
+			`${LOG_PREFIX} Invalid ${CACHE_TTL_SECONDS_ENV}=${rawValue}; using ${DEFAULT_CACHE_TTL_SECONDS}s.`,
+		);
+		return DEFAULT_CACHE_TTL_SECONDS * 1000;
+	}
+
+	return ttlSeconds * 1000;
+}
+
+function readCacheDir(): string {
+	return (
+		process.env[CACHE_DIR_ENV] ??
+		join(
+			process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"),
+			"pi-models-metadata",
+		)
+	);
+}
+
+function cachePath(cacheDir: string, type: string, key: string): string {
+	const digest = createHash("sha256").update(`${type}:${key}`).digest("hex");
+	return join(cacheDir, `${type}-${digest}.json`);
+}
+
+async function readFreshCache(
+	path: string,
+	ttlMs: number,
+): Promise<unknown | undefined> {
+	if (ttlMs === 0) return undefined;
+
+	try {
+		const entry = readCacheEntry(JSON.parse(await readFile(path, "utf8")));
+		if (!entry) return undefined;
+
+		if (Date.now() - entry.cachedAt <= ttlMs) {
+			return entry.data;
+		}
+	} catch {
+		return undefined;
+	}
+
+	return undefined;
+}
+
+async function writeCache(path: string, data: unknown): Promise<void> {
+	try {
+		await mkdir(dirname(path), { recursive: true });
+		await writeFile(
+			path,
+			JSON.stringify({ cachedAt: Date.now(), data } satisfies CacheEntry),
+			"utf8",
+		);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(`${LOG_PREFIX} Failed to write cache ${path}: ${message}.`);
+	}
+}
+
+async function fetchJsonWithCache(
+	url: string,
+	cacheType: string,
+	cacheKey: string,
+	ttlMs: number,
+	cacheDir: string,
+	init?: RequestInit,
+): Promise<unknown> {
+	const path = cachePath(cacheDir, cacheType, cacheKey);
+	const cached = await readFreshCache(path, ttlMs);
+	if (cached !== undefined) return cached;
+
+	const response = await fetch(url, init);
+	if (!response.ok) {
+		throw new Error(`HTTP ${response.status} ${response.statusText}`);
+	}
+
+	const data = await response.json();
+	await writeCache(path, data);
+	return data;
 }
 
 function readPricing(value: unknown): OrmcModel["pricing"] {
@@ -102,12 +256,40 @@ function readModel(value: unknown): OrmcModel | undefined {
 	};
 }
 
+function readProviderModel(value: unknown): ProviderListedModel | undefined {
+	if (!isRecord(value)) return undefined;
+
+	const id = asString(value.id);
+	if (!id) return undefined;
+
+	return {
+		id,
+		name: asString(value.name),
+	};
+}
+
 function readResponse(value: unknown): OrmcModelsResponse | undefined {
 	if (!isRecord(value) || !Array.isArray(value.data)) return undefined;
 
 	const data: OrmcModel[] = [];
 	for (const entry of value.data) {
 		const model = readModel(entry);
+		if (model) {
+			data.push(model);
+		}
+	}
+
+	return { data };
+}
+
+function readProviderModelsResponse(
+	value: unknown,
+): ProviderModelsResponse | undefined {
+	if (!isRecord(value) || !Array.isArray(value.data)) return undefined;
+
+	const data: ProviderListedModel[] = [];
+	for (const entry of value.data) {
+		const model = readProviderModel(entry);
 		if (model) {
 			data.push(model);
 		}
@@ -140,49 +322,120 @@ function supportsReasoning(parameters: string[] | undefined): boolean {
 	);
 }
 
-function toProviderModel(model: OrmcModel): ProviderModelConfig {
+function displayNameFromId(id: string): string {
+	return id.split("/").at(-1) || id;
+}
+
+function toProviderModel(
+	listedModel: ProviderListedModel,
+	metadata: OrmcModel | undefined,
+): ProviderModelConfig {
 	return {
-		id: model.id,
-		name: model.name,
-		reasoning: supportsReasoning(model.supported_parameters),
-		input: toInputTypes(model.architecture?.input_modalities),
+		id: listedModel.id,
+		name:
+			metadata?.name ?? listedModel.name ?? displayNameFromId(listedModel.id),
+		reasoning: supportsReasoning(metadata?.supported_parameters),
+		input: toInputTypes(metadata?.architecture?.input_modalities),
 		cost: {
-			input: parsePricePerMillion(model.pricing?.prompt),
-			output: parsePricePerMillion(model.pricing?.completion),
-			cacheRead: parsePricePerMillion(model.pricing?.input_cache_read),
-			cacheWrite: parsePricePerMillion(model.pricing?.input_cache_write),
+			input: parsePricePerMillion(metadata?.pricing?.prompt),
+			output: parsePricePerMillion(metadata?.pricing?.completion),
+			cacheRead: parsePricePerMillion(metadata?.pricing?.input_cache_read),
+			cacheWrite: parsePricePerMillion(metadata?.pricing?.input_cache_write),
 		},
 		contextWindow:
-			model.top_provider?.context_length ?? model.context_length ?? 128000,
-		maxTokens: model.top_provider?.max_completion_tokens ?? 16384,
+			metadata?.top_provider?.context_length ??
+			metadata?.context_length ??
+			128000,
+		maxTokens: metadata?.top_provider?.max_completion_tokens ?? 16384,
 	};
 }
 
-async function fetchModels(url: string): Promise<ProviderModelConfig[]> {
-	const response = await fetch(url);
-	if (!response.ok) {
-		throw new Error(`HTTP ${response.status} ${response.statusText}`);
+function buildModelsUrl(baseUrl: string): string {
+	return `${baseUrl.replace(/\/+$/, "")}/models`;
+}
+
+async function fetchProviderModels(
+	baseUrl: string,
+	apiKey: string | undefined,
+	ttlMs: number,
+	cacheDir: string,
+): Promise<ProviderListedModel[]> {
+	const headers: Record<string, string> = {};
+	if (apiKey) {
+		headers.Authorization = `Bearer ${apiKey}`;
 	}
 
-	const payload = readResponse(await response.json());
+	const modelsUrl = buildModelsUrl(baseUrl);
+	const payload = readProviderModelsResponse(
+		await fetchJsonWithCache(
+			modelsUrl,
+			"provider-models",
+			`${modelsUrl}:${apiKey ?? ""}`,
+			ttlMs,
+			cacheDir,
+			{ headers },
+		),
+	);
+	if (!payload) {
+		throw new Error("Invalid provider models response");
+	}
+
+	return payload.data;
+}
+
+async function fetchMetadata(
+	url: string,
+	ttlMs: number,
+	cacheDir: string,
+): Promise<Map<string, OrmcModel>> {
+	const payload = readResponse(
+		await fetchJsonWithCache(url, "metadata", url, ttlMs, cacheDir),
+	);
 	if (!payload) {
 		throw new Error("Invalid models metadata response");
 	}
 
-	return payload.data.map(toProviderModel);
+	return new Map(payload.data.map((model) => [model.id, model]));
+}
+
+async function fetchOptionalMetadata(
+	url: string,
+	ttlMs: number,
+	cacheDir: string,
+): Promise<Map<string, OrmcModel>> {
+	try {
+		return await fetchMetadata(url, ttlMs, cacheDir);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.warn(
+			`${LOG_PREFIX} Failed to load metadata from ${url}: ${message}. Using provider model list without metadata enrichment.`,
+		);
+		return new Map();
+	}
 }
 
 export default async function (pi: ExtensionAPI) {
+	await loadDotEnv();
+
 	const modelsUrl = process.env[METADATA_URL_ENV] || DEFAULT_METADATA_URL;
 	const baseUrl = process.env[BASE_URL_ENV] || DEFAULT_BASE_URL;
+	const apiKey = process.env[API_KEY_ENV];
 	const apiType = process.env[API_TYPE_ENV] || DEFAULT_API_TYPE;
 	const providerName = process.env[PROVIDER_NAME_ENV] || DEFAULT_PROVIDER_NAME;
+	const cacheTtlMs = readCacheTtlMs();
+	const cacheDir = readCacheDir();
 
 	try {
-		const models = await fetchModels(modelsUrl);
+		const [listedModels, metadataById] = await Promise.all([
+			fetchProviderModels(baseUrl, apiKey, cacheTtlMs, cacheDir),
+			fetchOptionalMetadata(modelsUrl, cacheTtlMs, cacheDir),
+		]);
+		const models = listedModels.map((model) =>
+			toProviderModel(model, metadataById.get(model.id)),
+		);
 		if (models.length === 0) {
 			console.warn(
-				`[ormc-model-metadata] No models found in ${modelsUrl}; keeping built-in OpenRouter models.`,
+				`${LOG_PREFIX} No models found in ${buildModelsUrl(baseUrl)}; keeping built-in OpenRouter models.`,
 			);
 			return;
 		}
@@ -196,7 +449,7 @@ export default async function (pi: ExtensionAPI) {
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.warn(
-			`[ormc-model-metadata] Failed to load ${modelsUrl}: ${message}. Keeping built-in OpenRouter models.`,
+			`${LOG_PREFIX} Failed to load provider models from ${buildModelsUrl(baseUrl)}: ${message}. Keeping built-in OpenRouter models.`,
 		);
 	}
 }

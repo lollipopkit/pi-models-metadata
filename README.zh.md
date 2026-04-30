@@ -1,4 +1,4 @@
-# Model Metadata Extension
+# Pi Model Metadata Extension
 
 [English](./README.md) | 中文
 
@@ -20,7 +20,14 @@ pi
 export PIMM_API_TYPE=openai-completions
 export PIMM_PROVIDER_NAME=custom-provider-name
 export PIMM_METADATA_DATA_URL=https://yourdomain.com/path/to/models-data.json
+export PIMM_CACHE_TTL_SECONDS=3600
+export PIMM_CACHE_DIR=/path/to/cache
 ```
+
+扩展也会读取当前目录下的 `.env` 文件。真实环境变量优先级高于 `.env`。
+模型列表和 metadata 默认本地缓存 1 小时。默认缓存目录是
+`$XDG_CACHE_HOME/pi-models-metadata`；未设置 `XDG_CACHE_HOME` 时使用
+`~/.cache/pi-models-metadata`。
 
 ## 更新内容
 
