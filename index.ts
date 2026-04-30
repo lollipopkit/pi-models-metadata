@@ -20,6 +20,8 @@ const PRICE_SCALE = 1_000_000;
 const LOG_PREFIX = "[pi-models-metadata]";
 const CACHE_DIR_ENV = "PIMM_CACHE_DIR";
 const CACHE_TTL_SECONDS_ENV = "PIMM_CACHE_TTL_SECONDS";
+const SKIP_CACHE_ENV = "PIMM_SKIP_CACHE";
+const DEBUG_ENV = "PIMM_DEBUG";
 const DEFAULT_CACHE_TTL_SECONDS = 60 * 60;
 const DOT_ENV_FILE = ".env";
 
@@ -34,6 +36,11 @@ interface ProviderModelsResponse {
 interface ProviderListedModel {
 	id: string;
 	name?: string;
+	context_length?: number;
+	architecture?: OrmcModel["architecture"];
+	pricing?: OrmcModel["pricing"];
+	top_provider?: OrmcModel["top_provider"];
+	supported_parameters?: string[];
 }
 
 interface CacheEntry {
@@ -59,6 +66,12 @@ interface OrmcModel {
 		max_completion_tokens?: number;
 	};
 	supported_parameters?: string[];
+}
+
+interface MetadataIndex {
+	byId: Map<string, OrmcModel>;
+	byNormalizedId: Map<string, OrmcModel>;
+	byUniqueBasename: Map<string, OrmcModel>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -142,6 +155,18 @@ function readCacheTtlMs(): number {
 	return ttlSeconds * 1000;
 }
 
+function readBooleanEnv(name: string): boolean {
+	const rawValue = process.env[name];
+	if (!rawValue) return false;
+
+	const value = rawValue.trim().toLowerCase();
+	if (["1", "true", "yes", "on"].includes(value)) return true;
+	if (["0", "false", "no", "off"].includes(value)) return false;
+
+	console.warn(`${LOG_PREFIX} Invalid ${name}=${rawValue}; using false.`);
+	return false;
+}
+
 function readCacheDir(): string {
 	return (
 		process.env[CACHE_DIR_ENV] ??
@@ -197,11 +222,14 @@ async function fetchJsonWithCache(
 	cacheKey: string,
 	ttlMs: number,
 	cacheDir: string,
+	skipCache: boolean,
 	init?: RequestInit,
 ): Promise<unknown> {
 	const path = cachePath(cacheDir, cacheType, cacheKey);
-	const cached = await readFreshCache(path, ttlMs);
-	if (cached !== undefined) return cached;
+	if (!skipCache) {
+		const cached = await readFreshCache(path, ttlMs);
+		if (cached !== undefined) return cached;
+	}
 
 	const response = await fetch(url, init);
 	if (!response.ok) {
@@ -265,6 +293,11 @@ function readProviderModel(value: unknown): ProviderListedModel | undefined {
 	return {
 		id,
 		name: asString(value.name),
+		context_length: asNumber(value.context_length),
+		architecture: readArchitecture(value.architecture),
+		pricing: readPricing(value.pricing),
+		top_provider: readTopProvider(value.top_provider),
+		supported_parameters: asStringArray(value.supported_parameters),
 	};
 }
 
@@ -326,28 +359,93 @@ function displayNameFromId(id: string): string {
 	return id.split("/").at(-1) || id;
 }
 
+function normalizeModelId(id: string): string {
+	return id.trim().toLowerCase();
+}
+
+function buildMetadataIndex(models: OrmcModel[]): MetadataIndex {
+	const byId = new Map<string, OrmcModel>();
+	const byNormalizedId = new Map<string, OrmcModel>();
+	const basenameBuckets = new Map<string, OrmcModel[]>();
+
+	for (const model of models) {
+		byId.set(model.id, model);
+		byNormalizedId.set(normalizeModelId(model.id), model);
+
+		const basename = normalizeModelId(displayNameFromId(model.id));
+		basenameBuckets.set(basename, [
+			...(basenameBuckets.get(basename) ?? []),
+			model,
+		]);
+	}
+
+	const byUniqueBasename = new Map<string, OrmcModel>();
+	for (const [basename, bucket] of basenameBuckets) {
+		if (bucket.length === 1) {
+			byUniqueBasename.set(basename, bucket[0]);
+		}
+	}
+
+	return { byId, byNormalizedId, byUniqueBasename };
+}
+
+function findMetadata(
+	listedModel: ProviderListedModel,
+	index: MetadataIndex,
+): OrmcModel | undefined {
+	const exact = index.byId.get(listedModel.id);
+	if (exact) return exact;
+
+	const normalizedId = normalizeModelId(listedModel.id);
+	const normalized = index.byNormalizedId.get(normalizedId);
+	if (normalized) return normalized;
+
+	if (!listedModel.id.includes("/")) {
+		return index.byUniqueBasename.get(normalizedId);
+	}
+
+	return undefined;
+}
+
 function toProviderModel(
 	listedModel: ProviderListedModel,
 	metadata: OrmcModel | undefined,
 ): ProviderModelConfig {
+	const enriched = metadata ?? listedModel;
+
 	return {
 		id: listedModel.id,
 		name:
 			metadata?.name ?? listedModel.name ?? displayNameFromId(listedModel.id),
-		reasoning: supportsReasoning(metadata?.supported_parameters),
-		input: toInputTypes(metadata?.architecture?.input_modalities),
+		reasoning: supportsReasoning(enriched.supported_parameters),
+		input: toInputTypes(enriched.architecture?.input_modalities),
 		cost: {
-			input: parsePricePerMillion(metadata?.pricing?.prompt),
-			output: parsePricePerMillion(metadata?.pricing?.completion),
-			cacheRead: parsePricePerMillion(metadata?.pricing?.input_cache_read),
-			cacheWrite: parsePricePerMillion(metadata?.pricing?.input_cache_write),
+			input: parsePricePerMillion(enriched.pricing?.prompt),
+			output: parsePricePerMillion(enriched.pricing?.completion),
+			cacheRead: parsePricePerMillion(enriched.pricing?.input_cache_read),
+			cacheWrite: parsePricePerMillion(enriched.pricing?.input_cache_write),
 		},
 		contextWindow:
-			metadata?.top_provider?.context_length ??
-			metadata?.context_length ??
+			enriched.top_provider?.context_length ??
+			enriched.context_length ??
 			128000,
-		maxTokens: metadata?.top_provider?.max_completion_tokens ?? 16384,
+		maxTokens: enriched.top_provider?.max_completion_tokens ?? 16384,
 	};
+}
+
+function logDebugModels(
+	providerName: string,
+	models: ProviderModelConfig[],
+): void {
+	if (!readBooleanEnv(DEBUG_ENV)) return;
+
+	for (const model of models) {
+		if (model.id.includes("deepseek-v4-pro")) {
+			console.warn(
+				`${LOG_PREFIX} register ${providerName}/${model.id}: contextWindow=${model.contextWindow}, maxTokens=${model.maxTokens}, reasoning=${model.reasoning}`,
+			);
+		}
+	}
 }
 
 function buildModelsUrl(baseUrl: string): string {
@@ -359,6 +457,7 @@ async function fetchProviderModels(
 	apiKey: string | undefined,
 	ttlMs: number,
 	cacheDir: string,
+	skipCache: boolean,
 ): Promise<ProviderListedModel[]> {
 	const headers: Record<string, string> = {};
 	if (apiKey) {
@@ -373,6 +472,7 @@ async function fetchProviderModels(
 			`${modelsUrl}:${apiKey ?? ""}`,
 			ttlMs,
 			cacheDir,
+			skipCache,
 			{ headers },
 		),
 	);
@@ -387,30 +487,32 @@ async function fetchMetadata(
 	url: string,
 	ttlMs: number,
 	cacheDir: string,
-): Promise<Map<string, OrmcModel>> {
+	skipCache: boolean,
+): Promise<MetadataIndex> {
 	const payload = readResponse(
-		await fetchJsonWithCache(url, "metadata", url, ttlMs, cacheDir),
+		await fetchJsonWithCache(url, "metadata", url, ttlMs, cacheDir, skipCache),
 	);
 	if (!payload) {
 		throw new Error("Invalid models metadata response");
 	}
 
-	return new Map(payload.data.map((model) => [model.id, model]));
+	return buildMetadataIndex(payload.data);
 }
 
 async function fetchOptionalMetadata(
 	url: string,
 	ttlMs: number,
 	cacheDir: string,
-): Promise<Map<string, OrmcModel>> {
+	skipCache: boolean,
+): Promise<MetadataIndex> {
 	try {
-		return await fetchMetadata(url, ttlMs, cacheDir);
+		return await fetchMetadata(url, ttlMs, cacheDir, skipCache);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		console.warn(
 			`${LOG_PREFIX} Failed to load metadata from ${url}: ${message}. Using provider model list without metadata enrichment.`,
 		);
-		return new Map();
+		return buildMetadataIndex([]);
 	}
 }
 
@@ -424,15 +526,17 @@ export default async function (pi: ExtensionAPI) {
 	const providerName = process.env[PROVIDER_NAME_ENV] || DEFAULT_PROVIDER_NAME;
 	const cacheTtlMs = readCacheTtlMs();
 	const cacheDir = readCacheDir();
+	const skipCache = readBooleanEnv(SKIP_CACHE_ENV);
 
 	try {
 		const [listedModels, metadataById] = await Promise.all([
-			fetchProviderModels(baseUrl, apiKey, cacheTtlMs, cacheDir),
-			fetchOptionalMetadata(modelsUrl, cacheTtlMs, cacheDir),
+			fetchProviderModels(baseUrl, apiKey, cacheTtlMs, cacheDir, skipCache),
+			fetchOptionalMetadata(modelsUrl, cacheTtlMs, cacheDir, skipCache),
 		]);
 		const models = listedModels.map((model) =>
-			toProviderModel(model, metadataById.get(model.id)),
+			toProviderModel(model, findMetadata(model, metadataById)),
 		);
+		logDebugModels(providerName, models);
 		if (models.length === 0) {
 			console.warn(
 				`${LOG_PREFIX} No models found in ${buildModelsUrl(baseUrl)}; keeping built-in OpenRouter models.`,

@@ -22,13 +22,16 @@ export PIMM_PROVIDER_NAME=custom-provider-name
 export PIMM_METADATA_DATA_URL=https://yourdomain.com/path/to/models-data.json
 export PIMM_CACHE_TTL_SECONDS=3600
 export PIMM_CACHE_DIR=/path/to/cache
+export PIMM_SKIP_CACHE=true
 ```
 
 The extension also reads these variables from a local `.env` file. Real
 environment variables take precedence over `.env` values. Model and metadata
 responses are cached locally for 1 hour by default. The default cache directory
 is `$XDG_CACHE_HOME/pi-models-metadata`, or `~/.cache/pi-models-metadata` when
-`XDG_CACHE_HOME` is not set.
+`XDG_CACHE_HOME` is not set. Set `PIMM_SKIP_CACHE=true` to force fresh provider
+model and metadata requests while still updating the local cache after a
+successful request.
 
 ## What It Updates
 
