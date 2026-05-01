@@ -47,3 +47,5 @@ successful request.
 ## More Extensions
 
 - [tab-follow-up](https://github.com/lollipopkit/pi-tab-follow-up): Use <kbd>Tab</kbd> instead of <kbd>Alt</kbd>+<kbd>Enter</kbd> to trigger follow-up input.
+- [ui-finetune](https://github.com/lollipopkit/pi-ui-finetune/blob/main/README.md): UI tweaks for a cleaner look.
+

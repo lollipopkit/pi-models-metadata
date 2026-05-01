@@ -45,3 +45,4 @@ provider 模型列表和 metadata；请求成功后仍会更新本地缓存。
 ## 更多插件
 
 - [tab-follow-up](https://github.com/lollipopkit/pi-tab-follow-up/blob/main/README.zh.md): 使用 <kbd>Tab</kbd> 而不是 <kbd>Alt</kbd>+<kbd>Enter</kbd> 来触发跟进输入。
+- [ui-finetune](https://github.com/lollipopkit/pi-ui-finetune/blob/main/README.zh.md): 微调UI, 显示简洁
