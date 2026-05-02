@@ -441,21 +441,6 @@ function toProviderModel(
 	};
 }
 
-function logDebugModels(
-	providerName: string,
-	models: ProviderModelConfig[],
-): void {
-	if (!readBooleanEnv(DEBUG_ENV)) return;
-
-	for (const model of models) {
-		if (model.id.includes("deepseek-v4-pro")) {
-			console.warn(
-				`${LOG_PREFIX} register ${providerName}/${model.id}: contextWindow=${model.contextWindow}, maxTokens=${model.maxTokens}, reasoning=${model.reasoning}`,
-			);
-		}
-	}
-}
-
 function buildModelsUrl(baseUrl: string): string {
 	return `${baseUrl.replace(/\/+$/, "")}/models`;
 }
@@ -544,7 +529,6 @@ export default async function (pi: ExtensionAPI) {
 		const models = listedModels.map((model) =>
 			toProviderModel(model, findMetadata(model, metadataById)),
 		);
-		logDebugModels(providerName, models);
 		if (models.length === 0) {
 			console.warn(
 				`${LOG_PREFIX} No models found in ${buildModelsUrl(baseUrl)}; keeping built-in OpenRouter models.`,
