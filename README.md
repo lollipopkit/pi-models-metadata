@@ -27,13 +27,13 @@ export PIMM_CACHE_DIR=/path/to/cache
 export PIMM_SKIP_CACHE=true
 ```
 
-The extension also reads these variables from a local `.env` file. Real
-environment variables take precedence over `.env` values. Model and metadata
-responses are cached locally for 1 hour by default. The default cache directory
-is `$XDG_CACHE_HOME/pi-models-metadata`, or `~/.cache/pi-models-metadata` when
-`XDG_CACHE_HOME` is not set. Set `PIMM_SKIP_CACHE=true` to force fresh provider
-model and metadata requests while still updating the local cache after a
-successful request.
+The extension also reads `PIMM_*` variables from a local `.env` file. Other
+`.env` keys are ignored, and real environment variables take precedence over
+`.env` values. Model and metadata responses are cached locally for 1 hour by
+default. The default cache directory is `$XDG_CACHE_HOME/pi-models-metadata`, or
+`~/.cache/pi-models-metadata` when `XDG_CACHE_HOME` is not set. Set
+`PIMM_SKIP_CACHE=true` to force fresh provider model and metadata requests while
+still updating the local cache after a successful request.
 
 ## What It Updates
 
@@ -48,4 +48,3 @@ successful request.
 
 - [tab-follow-up](https://github.com/lollipopkit/pi-tab-follow-up): Use <kbd>Tab</kbd> instead of <kbd>Alt</kbd>+<kbd>Enter</kbd> to trigger follow-up input.
 - [ui-finetune](https://github.com/lollipopkit/pi-ui-finetune/blob/main/README.md): UI tweaks for a cleaner look.
-

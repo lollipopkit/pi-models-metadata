@@ -27,8 +27,8 @@ export PIMM_CACHE_DIR=/path/to/cache
 export PIMM_SKIP_CACHE=true
 ```
 
-扩展也会读取当前目录下的 `.env` 文件。真实环境变量优先级高于 `.env`。
-模型列表和 metadata 默认本地缓存 1 小时。默认缓存目录是
+扩展也会从当前目录下的 `.env` 文件读取 `PIMM_*` 变量。其他 `.env` key 会被忽略，
+真实环境变量优先级高于 `.env`。模型列表和 metadata 默认本地缓存 1 小时。默认缓存目录是
 `$XDG_CACHE_HOME/pi-models-metadata`；未设置 `XDG_CACHE_HOME` 时使用
 `~/.cache/pi-models-metadata`。设置 `PIMM_SKIP_CACHE=true` 可以强制重新请求
 provider 模型列表和 metadata；请求成功后仍会更新本地缓存。

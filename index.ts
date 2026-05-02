@@ -25,6 +25,7 @@ const SKIP_CACHE_ENV = "PIMM_SKIP_CACHE";
 const DEBUG_ENV = "PIMM_DEBUG";
 const DEFAULT_CACHE_TTL_SECONDS = 60 * 60;
 const DOT_ENV_FILE = ".env";
+const DOT_ENV_PREFIX = "PIMM_";
 
 interface OrmcModelsResponse {
 	data: OrmcModel[];
@@ -135,7 +136,13 @@ async function loadDotEnv(): Promise<void> {
 		if (equalsIndex <= 0) continue;
 
 		const key = line.slice(0, equalsIndex).trim();
-		if (!key || process.env[key] !== undefined) continue;
+		if (
+			!key ||
+			!key.startsWith(DOT_ENV_PREFIX) ||
+			process.env[key] !== undefined
+		) {
+			continue;
+		}
 
 		process.env[key] = parseDotEnvValue(line.slice(equalsIndex + 1));
 	}
