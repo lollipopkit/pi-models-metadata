@@ -2,11 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Api } from "@mariozechner/pi-ai";
+import type { Api } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ProviderModelConfig,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 const DEFAULT_METADATA_URL = "https://ormc.lollipopkit.com/models-data.json";
 const METADATA_URL_ENV = "PIMM_METADATA_DATA_URL";
@@ -22,7 +22,6 @@ const LOG_PREFIX = "[pi-models-metadata]";
 const CACHE_DIR_ENV = "PIMM_CACHE_DIR";
 const CACHE_TTL_SECONDS_ENV = "PIMM_CACHE_TTL_SECONDS";
 const SKIP_CACHE_ENV = "PIMM_SKIP_CACHE";
-const DEBUG_ENV = "PIMM_DEBUG";
 const DEFAULT_CACHE_TTL_SECONDS = 60 * 60;
 const DOT_ENV_FILE = ".env";
 const DOT_ENV_PREFIX = "PIMM_";
