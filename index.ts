@@ -544,7 +544,7 @@ export default async function (pi: ExtensionAPI) {
 
 		pi.registerProvider(providerName, {
 			baseUrl,
-			apiKey: API_KEY_ENV,
+			apiKey: `$${API_KEY_ENV}`,
 			api: apiType,
 			models,
 		});
