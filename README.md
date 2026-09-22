@@ -27,13 +27,32 @@ export PIMM_CACHE_DIR=/path/to/cache
 export PIMM_SKIP_CACHE=true
 ```
 
-The extension also reads `PIMM_*` variables from a local `.env` file. Other
-`.env` keys are ignored, and real environment variables take precedence over
-`.env` values. Model and metadata responses are cached locally for 1 hour by
-default. The default cache directory is `$XDG_CACHE_HOME/pi-models-metadata`, or
+### Config File
+
+The extension also reads `PIMM_*` variables from
+`~/.pi/agent/pi-models-metadata.env` (the pi agent directory, which
+`PI_CODING_AGENT_DIR` overrides). See
+[`pi-models-metadata.env.example`](./pi-models-metadata.env.example). Other keys
+are ignored, and real environment variables take precedence over file values.
+
+Project `.env` files are not read: any repository could otherwise redirect the
+provider API key to another host. The extension warns when the current
+directory's `.env` contains `PIMM_*` variables.
+
+### Cache and Network
+
+Model and metadata responses are cached locally for 1 hour by default. The
+default cache directory is `$XDG_CACHE_HOME/pi-models-metadata`, or
 `~/.cache/pi-models-metadata` when `XDG_CACHE_HOME` is not set. Set
-`PIMM_SKIP_CACHE=true` to force fresh provider model and metadata requests while
-still updating the local cache after a successful request.
+`PIMM_SKIP_CACHE=true` to force fresh provider model and metadata requests at
+startup while still updating the local cache after a successful request.
+
+Requests time out after 10 seconds. When a request fails, the last cached
+response is used regardless of its age. In offline mode (`pi --offline` or
+`PI_OFFLINE=1`), no requests are sent and only cached responses are used.
+During a session, pi refreshes the model list in the background (for example
+from `/model` search); the extension sends requests only after the cache TTL
+expires.
 
 ## What It Updates
 
