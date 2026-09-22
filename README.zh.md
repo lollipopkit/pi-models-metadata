@@ -34,6 +34,19 @@ export PIMM_SKIP_CACHE=true
 [`pi-models-metadata.env.example`](./pi-models-metadata.env.example)。其他 key
 会被忽略，真实环境变量优先级高于文件中的值。
 
+```bash
+cp pi-models-metadata.env.example ~/.pi/agent/pi-models-metadata.env
+chmod 600 ~/.pi/agent/pi-models-metadata.env
+```
+
+该文件是明文。如果要把 API key 存在 macOS Keychain 中，不要把 `PIMM_API_KEY`
+写进文件，改为在 shell profile 中 export：
+
+```bash
+security add-generic-password -a "$USER" -s pi-models-metadata -w  # 交互输入 key
+export PIMM_API_KEY="$(security find-generic-password -a "$USER" -s pi-models-metadata -w)"
+```
+
 扩展不读取项目目录下的 `.env`，否则任意仓库都可以把 provider API key 转发到其他主机。
 当前目录的 `.env` 中包含 `PIMM_*` 变量时，扩展会输出 warning。
 
@@ -47,6 +60,9 @@ provider 模型列表和 metadata；请求成功后仍会更新本地缓存。
 请求超时时间为 10 秒。请求失败时使用最近一次的缓存，不限缓存时间。offline 模式
 （`pi --offline` 或 `PI_OFFLINE=1`）下不发送请求，只使用缓存。session 期间 pi 会在后台刷新
 模型列表（例如 `/model` 搜索时），缓存 TTL 过期后扩展才会重新发送请求。
+
+在 session 中执行 `/pimm-refresh` 可以跳过缓存 TTL，立即重新加载模型列表和 metadata。
+启动时加载失败的情况下，该命令也会补注册 provider。
 
 ## 更新内容
 
