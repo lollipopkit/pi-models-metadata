@@ -25,6 +25,7 @@ const CACHE_TTL_SECONDS_ENV = "PIMM_CACHE_TTL_SECONDS";
 const SKIP_CACHE_ENV = "PIMM_SKIP_CACHE";
 const DEFAULT_CACHE_TTL_SECONDS = 60 * 60;
 const FETCH_TIMEOUT_MS = 10_000;
+const REFRESH_COMMAND = "pimm-refresh";
 const OFFLINE_ENV = "PI_OFFLINE";
 const CONFIG_FILE_NAME = "pi-models-metadata.env";
 // TODO: Remove with the legacy project .env warning.
@@ -569,15 +570,28 @@ async function fetchProviderModels(
 	}
 
 	const modelsUrl = buildModelsUrl(settings.baseUrl);
-	const payload = await fetchWithCache(
-		modelsUrl,
-		"provider-models",
-		`${modelsUrl}:${settings.apiKey ?? ""}`,
-		readProviderModelsResponse,
-		settings,
-		options,
-		{ headers },
-	);
+	let payload: ProviderModelsResponse;
+	try {
+		payload = await fetchWithCache(
+			modelsUrl,
+			"provider-models",
+			`${modelsUrl}:${settings.apiKey ?? ""}`,
+			readProviderModelsResponse,
+			settings,
+			options,
+			{ headers },
+		);
+	} catch (error) {
+		throw new Error(
+			`Failed to load provider models from ${modelsUrl}: ${errorMessage(error)}`,
+		);
+	}
+
+	// Never publish an empty list: it would also replace the models of a
+	// built-in provider when PIMM_PROVIDER_NAME overrides one.
+	if (payload.data.length === 0) {
+		throw new Error(`No models found in ${modelsUrl}`);
+	}
 
 	return payload.data;
 }
@@ -626,57 +640,84 @@ export default async function (pi: ExtensionAPI) {
 	const settings = readSettings();
 	const apiType = readApiType();
 	const providerName = process.env[PROVIDER_NAME_ENV] || DEFAULT_PROVIDER_NAME;
-	const modelsUrl = buildModelsUrl(settings.baseUrl);
-	const notRegistered = `Provider "${providerName}" was not registered.`;
+	let models: ProviderModelConfig[] = [];
 
-	let models: ProviderModelConfig[];
-	try {
-		models = await loadModels(settings, {
-			allowNetwork: !isOfflineMode(),
-			force: readBooleanEnv(SKIP_CACHE_ENV),
-			warn: (message) => console.warn(`${LOG_PREFIX} ${message}`),
+	// Registering again after startup replaces the published models immediately.
+	const register = (loaded: ProviderModelConfig[]): void => {
+		models = loaded;
+		pi.registerProvider(providerName, {
+			baseUrl: settings.baseUrl,
+			apiKey: `$${API_KEY_ENV}`,
+			api: apiType,
+			models,
+			// Pi refreshes catalogs in the background (e.g. after interactive startup
+			// and from /model search). Fresh cached responses are reused, so this
+			// only sends requests after PIMM_CACHE_TTL_SECONDS expires or when pi
+			// forces it. A thrown error keeps the current models.
+			async refreshModels({ allowNetwork, force, signal }) {
+				if (!allowNetwork) return models;
+
+				models = await loadModels(settings, {
+					allowNetwork,
+					force: force ?? false,
+					signal,
+					// Console output would corrupt the TUI; thrown errors are reported by pi.
+					warn: () => {},
+				});
+				return models;
+			},
 		});
-	} catch (error) {
-		console.warn(
-			`${LOG_PREFIX} Failed to load provider models from ${modelsUrl}: ${errorMessage(error)}. ${notRegistered}`,
-		);
-		return;
-	}
+	};
 
-	// Registering an empty list would also replace the models of a built-in
-	// provider when PIMM_PROVIDER_NAME overrides one.
-	if (models.length === 0) {
-		console.warn(
-			`${LOG_PREFIX} No models found in ${modelsUrl}. ${notRegistered}`,
-		);
-		return;
-	}
-
-	pi.registerProvider(providerName, {
-		baseUrl: settings.baseUrl,
-		apiKey: `$${API_KEY_ENV}`,
-		api: apiType,
-		models,
-		// Pi refreshes catalogs in the background (e.g. after interactive startup
-		// and from /model search). Fresh cached responses are reused, so this only
-		// sends requests after PIMM_CACHE_TTL_SECONDS expires or when pi forces it.
-		async refreshModels({ allowNetwork, force, signal }) {
-			if (!allowNetwork) return models;
-
-			const refreshed = await loadModels(settings, {
-				allowNetwork,
-				force: force ?? false,
-				signal,
-				// Console output would corrupt the TUI; thrown errors are reported by pi.
-				warn: () => {},
-			});
-			// Throwing keeps the current models instead of publishing an empty list.
-			if (refreshed.length === 0) {
-				throw new Error(`No models found in ${modelsUrl}`);
+	pi.registerCommand(REFRESH_COMMAND, {
+		description: `Reload ${providerName} models and metadata, bypassing the cache TTL`,
+		async handler(_args, ctx) {
+			if (isOfflineMode()) {
+				ctx.ui.notify(
+					`${LOG_PREFIX} Offline mode is enabled; refresh skipped.`,
+					"warning",
+				);
+				return;
 			}
 
-			models = refreshed;
-			return models;
+			const warnings: string[] = [];
+			try {
+				register(
+					await loadModels(settings, {
+						allowNetwork: true,
+						force: true,
+						warn: (message) => warnings.push(message),
+					}),
+				);
+			} catch (error) {
+				ctx.ui.notify(
+					`${LOG_PREFIX} ${errorMessage(error)}. Current models are unchanged.`,
+					"error",
+				);
+				return;
+			}
+
+			ctx.ui.notify(
+				[
+					`${LOG_PREFIX} Registered ${models.length} models for provider "${providerName}".`,
+					...warnings,
+				].join("\n"),
+				warnings.length > 0 ? "warning" : "info",
+			);
 		},
 	});
+
+	try {
+		register(
+			await loadModels(settings, {
+				allowNetwork: !isOfflineMode(),
+				force: readBooleanEnv(SKIP_CACHE_ENV),
+				warn: (message) => console.warn(`${LOG_PREFIX} ${message}`),
+			}),
+		);
+	} catch (error) {
+		console.warn(
+			`${LOG_PREFIX} ${errorMessage(error)}. Provider "${providerName}" was not registered; run /${REFRESH_COMMAND} to retry.`,
+		);
+	}
 }

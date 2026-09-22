@@ -35,6 +35,19 @@ The extension also reads `PIMM_*` variables from
 [`pi-models-metadata.env.example`](./pi-models-metadata.env.example). Other keys
 are ignored, and real environment variables take precedence over file values.
 
+```bash
+cp pi-models-metadata.env.example ~/.pi/agent/pi-models-metadata.env
+chmod 600 ~/.pi/agent/pi-models-metadata.env
+```
+
+The file is plain text. To keep the API key in the macOS Keychain instead,
+leave `PIMM_API_KEY` out of the file and export it from your shell profile:
+
+```bash
+security add-generic-password -a "$USER" -s pi-models-metadata -w  # prompts for the key
+export PIMM_API_KEY="$(security find-generic-password -a "$USER" -s pi-models-metadata -w)"
+```
+
 Project `.env` files are not read: any repository could otherwise redirect the
 provider API key to another host. The extension warns when the current
 directory's `.env` contains `PIMM_*` variables.
@@ -53,6 +66,10 @@ response is used regardless of its age. In offline mode (`pi --offline` or
 During a session, pi refreshes the model list in the background (for example
 from `/model` search); the extension sends requests only after the cache TTL
 expires.
+
+Run `/pimm-refresh` in a session to reload models and metadata immediately,
+bypassing the cache TTL. It also registers the provider when loading failed at
+startup.
 
 ## What It Updates
 
