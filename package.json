@@ -1,13 +1,13 @@
 {
 	"name": "pi-models-metadata",
-	"version": "0.1.6",
+	"version": "0.2.0",
 	"description": "Pi extension that registers provider models with metadata enrichment.",
 	"type": "module",
 	"files": [
 		"index.ts",
 		"README.md",
 		"README.zh.md",
-		".env.example"
+		"pi-models-metadata.env.example"
 	],
 	"pi": {
 		"extensions": [
@@ -19,7 +19,7 @@
 		"@earendil-works/pi-coding-agent": "*"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-ai": "^0.78.0",
-		"@earendil-works/pi-coding-agent": "^0.78.0"
+		"@earendil-works/pi-ai": "^0.87.0",
+		"@earendil-works/pi-coding-agent": "^0.87.0"
 	}
 }

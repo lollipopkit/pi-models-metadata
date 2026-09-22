@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Api } from "@earendil-works/pi-ai";
-import type {
-	ExtensionAPI,
-	ProviderModelConfig,
+import {
+	type ExtensionAPI,
+	getAgentDir,
+	type ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
 
 const DEFAULT_METADATA_URL = "https://ormc.lollipopkit.com/models-data.json";
@@ -23,8 +24,12 @@ const CACHE_DIR_ENV = "PIMM_CACHE_DIR";
 const CACHE_TTL_SECONDS_ENV = "PIMM_CACHE_TTL_SECONDS";
 const SKIP_CACHE_ENV = "PIMM_SKIP_CACHE";
 const DEFAULT_CACHE_TTL_SECONDS = 60 * 60;
-const DOT_ENV_FILE = ".env";
-const DOT_ENV_PREFIX = "PIMM_";
+const FETCH_TIMEOUT_MS = 10_000;
+const OFFLINE_ENV = "PI_OFFLINE";
+const CONFIG_FILE_NAME = "pi-models-metadata.env";
+// TODO: Remove with the legacy project .env warning.
+const LEGACY_DOT_ENV_FILE = ".env";
+const ENV_PREFIX = "PIMM_";
 
 interface OrmcModelsResponse {
 	data: OrmcModel[];
@@ -47,6 +52,23 @@ interface ProviderListedModel {
 interface CacheEntry {
 	cachedAt: number;
 	data: unknown;
+}
+
+interface Settings {
+	baseUrl: string;
+	apiKey: string | undefined;
+	metadataUrl: string;
+	cacheDir: string;
+	cacheTtlMs: number;
+}
+
+interface LoadOptions {
+	/** When false, cached responses are used regardless of age and no request is sent. */
+	allowNetwork: boolean;
+	/** Ignore fresh cached responses and request immediately. */
+	force: boolean;
+	signal?: AbortSignal;
+	warn: (message: string) => void;
 }
 
 interface OrmcModel {
@@ -119,13 +141,21 @@ function parseDotEnvValue(value: string): string {
 	return trimmed;
 }
 
-async function loadDotEnv(): Promise<void> {
-	let content: string;
-	try {
-		content = await readFile(DOT_ENV_FILE, "utf8");
-	} catch {
-		return;
-	}
+function errorMessage(error: unknown): string {
+	if (!(error instanceof Error)) return String(error);
+	return error.cause instanceof Error
+		? `${error.message}: ${error.cause.message}`
+		: error.message;
+}
+
+function isFileNotFound(error: unknown): boolean {
+	return isRecord(error) && error.code === "ENOENT";
+}
+
+/** Reads `PIMM_*` entries from a dotenv-style file; other keys are ignored. */
+async function readEnvFile(path: string): Promise<Map<string, string>> {
+	const entries = new Map<string, string>();
+	const content = await readFile(path, "utf8");
 
 	for (const rawLine of content.split(/\r?\n/)) {
 		const line = rawLine.trim().replace(/^export\s+/, "");
@@ -135,16 +165,52 @@ async function loadDotEnv(): Promise<void> {
 		if (equalsIndex <= 0) continue;
 
 		const key = line.slice(0, equalsIndex).trim();
-		if (
-			!key ||
-			!key.startsWith(DOT_ENV_PREFIX) ||
-			process.env[key] !== undefined
-		) {
-			continue;
-		}
+		if (!key.startsWith(ENV_PREFIX)) continue;
 
-		process.env[key] = parseDotEnvValue(line.slice(equalsIndex + 1));
+		entries.set(key, parseDotEnvValue(line.slice(equalsIndex + 1)));
 	}
+
+	return entries;
+}
+
+/**
+ * Loads the user-level config file. Real environment variables take precedence.
+ * Values are written to `process.env` because pi resolves `$PIMM_API_KEY` there.
+ */
+async function loadConfigFile(path: string): Promise<void> {
+	let entries: Map<string, string>;
+	try {
+		entries = await readEnvFile(path);
+	} catch (error) {
+		if (!isFileNotFound(error)) {
+			console.warn(
+				`${LOG_PREFIX} Failed to read ${path}: ${errorMessage(error)}.`,
+			);
+		}
+		return;
+	}
+
+	for (const [key, value] of entries) {
+		if (process.env[key] === undefined) {
+			process.env[key] = value;
+		}
+	}
+}
+
+// TODO: Remove this migration warning after project .env files have been unsupported for a few releases.
+async function warnLegacyDotEnv(configPath: string): Promise<void> {
+	const path = resolve(LEGACY_DOT_ENV_FILE);
+	let keys: string[];
+	try {
+		keys = [...(await readEnvFile(path)).keys()];
+	} catch {
+		return;
+	}
+	if (keys.length === 0) return;
+
+	console.warn(
+		`${LOG_PREFIX} Ignoring ${keys.join(", ")} in ${path}: project .env files are no longer read because any repository could redirect the provider API key. Move these variables to ${configPath} or export them.`,
+	);
 }
 
 function readCacheTtlMs(): number {
@@ -191,32 +257,40 @@ function readCacheDir(): string {
 	);
 }
 
+/** Mirrors pi's own `PI_OFFLINE` parsing (`--offline` sets it to `1`). */
+function isOfflineMode(): boolean {
+	const value = process.env[OFFLINE_ENV]?.toLowerCase();
+	return value === "1" || value === "true" || value === "yes";
+}
+
+function readSettings(): Settings {
+	return {
+		baseUrl: process.env[BASE_URL_ENV] || DEFAULT_BASE_URL,
+		apiKey: process.env[API_KEY_ENV],
+		metadataUrl: process.env[METADATA_URL_ENV] || DEFAULT_METADATA_URL,
+		cacheDir: readCacheDir(),
+		cacheTtlMs: readCacheTtlMs(),
+	};
+}
+
 function cachePath(cacheDir: string, type: string, key: string): string {
 	const digest = createHash("sha256").update(`${type}:${key}`).digest("hex");
 	return join(cacheDir, `${type}-${digest}.json`);
 }
 
-async function readFreshCache(
-	path: string,
-	ttlMs: number,
-): Promise<unknown | undefined> {
-	if (ttlMs === 0) return undefined;
-
+async function readCache(path: string): Promise<CacheEntry | undefined> {
 	try {
-		const entry = readCacheEntry(JSON.parse(await readFile(path, "utf8")));
-		if (!entry) return undefined;
-
-		if (Date.now() - entry.cachedAt <= ttlMs) {
-			return entry.data;
-		}
+		return readCacheEntry(JSON.parse(await readFile(path, "utf8")));
 	} catch {
 		return undefined;
 	}
-
-	return undefined;
 }
 
-async function writeCache(path: string, data: unknown): Promise<void> {
+async function writeCache(
+	path: string,
+	data: unknown,
+	warn: LoadOptions["warn"],
+): Promise<void> {
 	try {
 		await mkdir(dirname(path), { recursive: true });
 		await writeFile(
@@ -225,34 +299,68 @@ async function writeCache(path: string, data: unknown): Promise<void> {
 			"utf8",
 		);
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		console.warn(`${LOG_PREFIX} Failed to write cache ${path}: ${message}.`);
+		warn(`Failed to write cache ${path}: ${errorMessage(error)}.`);
 	}
 }
 
-async function fetchJsonWithCache(
+function requestSignal(signal: AbortSignal | undefined): AbortSignal {
+	const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+	return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
+/**
+ * Fetches and parses JSON through the local cache. Only responses accepted by
+ * `parse` are cached. A cached response of any age is used when network access
+ * is not allowed or when the request fails.
+ */
+async function fetchWithCache<T>(
 	url: string,
 	cacheType: string,
 	cacheKey: string,
-	ttlMs: number,
-	cacheDir: string,
-	skipCache: boolean,
+	parse: (value: unknown) => T | undefined,
+	settings: Settings,
+	options: LoadOptions,
 	init?: RequestInit,
-): Promise<unknown> {
-	const path = cachePath(cacheDir, cacheType, cacheKey);
-	if (!skipCache) {
-		const cached = await readFreshCache(path, ttlMs);
-		if (cached !== undefined) return cached;
+): Promise<T> {
+	const path = cachePath(settings.cacheDir, cacheType, cacheKey);
+	const cachedEntry = await readCache(path);
+	const cached = cachedEntry && parse(cachedEntry.data);
+
+	if (cachedEntry && cached !== undefined) {
+		const fresh =
+			settings.cacheTtlMs > 0 &&
+			Date.now() - cachedEntry.cachedAt <= settings.cacheTtlMs;
+		if (!options.allowNetwork || (fresh && !options.force)) return cached;
+	}
+	if (!options.allowNetwork) {
+		throw new Error("Offline mode is enabled and no cached response exists");
 	}
 
-	const response = await fetch(url, init);
-	if (!response.ok) {
-		throw new Error(`HTTP ${response.status} ${response.statusText}`);
-	}
+	try {
+		const response = await fetch(url, {
+			...init,
+			signal: requestSignal(options.signal),
+		});
+		if (!response.ok) {
+			throw new Error(`HTTP ${response.status} ${response.statusText}`);
+		}
 
-	const data = await response.json();
-	await writeCache(path, data);
-	return data;
+		const data: unknown = await response.json();
+		const parsed = parse(data);
+		if (parsed === undefined) {
+			throw new Error("Invalid response");
+		}
+
+		await writeCache(path, data, options.warn);
+		return parsed;
+	} catch (error) {
+		if (!cachedEntry || cached === undefined) throw error;
+
+		options.warn(
+			`Request to ${url} failed: ${errorMessage(error)}. Using cached response from ${new Date(cachedEntry.cachedAt).toISOString()}.`,
+		);
+		return cached;
+	}
 }
 
 function readPricing(value: unknown): OrmcModel["pricing"] {
@@ -452,106 +560,123 @@ function buildModelsUrl(baseUrl: string): string {
 }
 
 async function fetchProviderModels(
-	baseUrl: string,
-	apiKey: string | undefined,
-	ttlMs: number,
-	cacheDir: string,
-	skipCache: boolean,
+	settings: Settings,
+	options: LoadOptions,
 ): Promise<ProviderListedModel[]> {
 	const headers: Record<string, string> = {};
-	if (apiKey) {
-		headers.Authorization = `Bearer ${apiKey}`;
+	if (settings.apiKey) {
+		headers.Authorization = `Bearer ${settings.apiKey}`;
 	}
 
-	const modelsUrl = buildModelsUrl(baseUrl);
-	const payload = readProviderModelsResponse(
-		await fetchJsonWithCache(
-			modelsUrl,
-			"provider-models",
-			`${modelsUrl}:${apiKey ?? ""}`,
-			ttlMs,
-			cacheDir,
-			skipCache,
-			{ headers },
-		),
+	const modelsUrl = buildModelsUrl(settings.baseUrl);
+	const payload = await fetchWithCache(
+		modelsUrl,
+		"provider-models",
+		`${modelsUrl}:${settings.apiKey ?? ""}`,
+		readProviderModelsResponse,
+		settings,
+		options,
+		{ headers },
 	);
-	if (!payload) {
-		throw new Error("Invalid provider models response");
-	}
 
 	return payload.data;
 }
 
-async function fetchMetadata(
-	url: string,
-	ttlMs: number,
-	cacheDir: string,
-	skipCache: boolean,
-): Promise<MetadataIndex> {
-	const payload = readResponse(
-		await fetchJsonWithCache(url, "metadata", url, ttlMs, cacheDir, skipCache),
-	);
-	if (!payload) {
-		throw new Error("Invalid models metadata response");
-	}
-
-	return buildMetadataIndex(payload.data);
-}
-
 async function fetchOptionalMetadata(
-	url: string,
-	ttlMs: number,
-	cacheDir: string,
-	skipCache: boolean,
+	settings: Settings,
+	options: LoadOptions,
 ): Promise<MetadataIndex> {
 	try {
-		return await fetchMetadata(url, ttlMs, cacheDir, skipCache);
+		const payload = await fetchWithCache(
+			settings.metadataUrl,
+			"metadata",
+			settings.metadataUrl,
+			readResponse,
+			settings,
+			options,
+		);
+		return buildMetadataIndex(payload.data);
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		console.warn(
-			`${LOG_PREFIX} Failed to load metadata from ${url}: ${message}. Using provider model list without metadata enrichment.`,
+		options.warn(
+			`Failed to load metadata from ${settings.metadataUrl}: ${errorMessage(error)}. Using provider model list without metadata enrichment.`,
 		);
 		return buildMetadataIndex([]);
 	}
 }
 
-export default async function (pi: ExtensionAPI) {
-	await loadDotEnv();
+async function loadModels(
+	settings: Settings,
+	options: LoadOptions,
+): Promise<ProviderModelConfig[]> {
+	const [listedModels, metadataIndex] = await Promise.all([
+		fetchProviderModels(settings, options),
+		fetchOptionalMetadata(settings, options),
+	]);
 
-	const modelsUrl = process.env[METADATA_URL_ENV] || DEFAULT_METADATA_URL;
-	const baseUrl = process.env[BASE_URL_ENV] || DEFAULT_BASE_URL;
-	const apiKey = process.env[API_KEY_ENV];
+	return listedModels.map((model) =>
+		toProviderModel(model, findMetadata(model, metadataIndex)),
+	);
+}
+
+export default async function (pi: ExtensionAPI) {
+	const configPath = join(getAgentDir(), CONFIG_FILE_NAME);
+	await loadConfigFile(configPath);
+	await warnLegacyDotEnv(configPath);
+
+	const settings = readSettings();
 	const apiType = readApiType();
 	const providerName = process.env[PROVIDER_NAME_ENV] || DEFAULT_PROVIDER_NAME;
-	const cacheTtlMs = readCacheTtlMs();
-	const cacheDir = readCacheDir();
-	const skipCache = readBooleanEnv(SKIP_CACHE_ENV);
+	const modelsUrl = buildModelsUrl(settings.baseUrl);
+	const notRegistered = `Provider "${providerName}" was not registered.`;
 
+	let models: ProviderModelConfig[];
 	try {
-		const [listedModels, metadataById] = await Promise.all([
-			fetchProviderModels(baseUrl, apiKey, cacheTtlMs, cacheDir, skipCache),
-			fetchOptionalMetadata(modelsUrl, cacheTtlMs, cacheDir, skipCache),
-		]);
-		const models = listedModels.map((model) =>
-			toProviderModel(model, findMetadata(model, metadataById)),
-		);
-		if (models.length === 0) {
-			console.warn(
-				`${LOG_PREFIX} No models found in ${buildModelsUrl(baseUrl)}; keeping built-in OpenRouter models.`,
-			);
-			return;
-		}
-
-		pi.registerProvider(providerName, {
-			baseUrl,
-			apiKey: `$${API_KEY_ENV}`,
-			api: apiType,
-			models,
+		models = await loadModels(settings, {
+			allowNetwork: !isOfflineMode(),
+			force: readBooleanEnv(SKIP_CACHE_ENV),
+			warn: (message) => console.warn(`${LOG_PREFIX} ${message}`),
 		});
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
 		console.warn(
-			`${LOG_PREFIX} Failed to load provider models from ${buildModelsUrl(baseUrl)}: ${message}. Keeping built-in OpenRouter models.`,
+			`${LOG_PREFIX} Failed to load provider models from ${modelsUrl}: ${errorMessage(error)}. ${notRegistered}`,
 		);
+		return;
 	}
+
+	// Registering an empty list would also replace the models of a built-in
+	// provider when PIMM_PROVIDER_NAME overrides one.
+	if (models.length === 0) {
+		console.warn(
+			`${LOG_PREFIX} No models found in ${modelsUrl}. ${notRegistered}`,
+		);
+		return;
+	}
+
+	pi.registerProvider(providerName, {
+		baseUrl: settings.baseUrl,
+		apiKey: `$${API_KEY_ENV}`,
+		api: apiType,
+		models,
+		// Pi refreshes catalogs in the background (e.g. after interactive startup
+		// and from /model search). Fresh cached responses are reused, so this only
+		// sends requests after PIMM_CACHE_TTL_SECONDS expires or when pi forces it.
+		async refreshModels({ allowNetwork, force, signal }) {
+			if (!allowNetwork) return models;
+
+			const refreshed = await loadModels(settings, {
+				allowNetwork,
+				force: force ?? false,
+				signal,
+				// Console output would corrupt the TUI; thrown errors are reported by pi.
+				warn: () => {},
+			});
+			// Throwing keeps the current models instead of publishing an empty list.
+			if (refreshed.length === 0) {
+				throw new Error(`No models found in ${modelsUrl}`);
+			}
+
+			models = refreshed;
+			return models;
+		},
+	});
 }
