@@ -483,7 +483,11 @@ function displayNameFromId(id: string): string {
 }
 
 function normalizeModelId(id: string): string {
-	return id.trim().toLowerCase();
+	// Unify version separators so `claude-haiku-5-5` matches `claude-haiku-5.5`.
+	return id
+		.trim()
+		.toLowerCase()
+		.replace(/(\d)\.(?=\d)/g, "$1-");
 }
 
 function buildMetadataIndex(models: OrmcModel[]): MetadataIndex {
