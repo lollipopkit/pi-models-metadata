@@ -48,6 +48,13 @@ security add-generic-password -a "$USER" -s pi-models-metadata -w  # prompts for
 export PIMM_API_KEY="$(security find-generic-password -a "$USER" -s pi-models-metadata -w)"
 ```
 
+With 1Password, keep the key in a Password item and read it with the `op` CLI
+(1Password asks to authorize the shell):
+
+```bash
+export PIMM_API_KEY="$(op read --no-newline op://Private/pi-models-metadata/password)"
+```
+
 Project `.env` files are not read: any repository could otherwise redirect the
 provider API key to another host. The extension warns when the current
 directory's `.env` contains `PIMM_*` variables.
