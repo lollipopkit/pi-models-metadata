@@ -52,7 +52,7 @@ With 1Password, keep the key in a Password item and read it with the `op` CLI
 (1Password asks to authorize the shell):
 
 ```bash
-export PIMM_API_KEY="$(op read --no-newline op://Private/pi-models-metadata/password)"
+export PIMM_API_KEY="$(op read --no-newline op://Dev/pimm-api-key/credential)"
 ```
 
 Project `.env` files are not read: any repository could otherwise redirect the
