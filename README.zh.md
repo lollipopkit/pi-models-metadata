@@ -50,7 +50,7 @@ export PIMM_API_KEY="$(security find-generic-password -a "$USER" -s pi-models-me
 使用 1Password 时，把 key 存为 Password 类条目，用 `op` CLI 读取（1Password 会请求授权当前 shell）：
 
 ```bash
-export PIMM_API_KEY="$(op read --no-newline op://Private/pi-models-metadata/password)"
+export PIMM_API_KEY="$(op read --no-newline op://Dev/pimm-api-key/credential)"
 ```
 
 扩展不读取项目目录下的 `.env`，否则任意仓库都可以把 provider API key 转发到其他主机。
